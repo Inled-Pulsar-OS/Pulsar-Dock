@@ -369,7 +369,6 @@ export const DockDash = GObject.registerClass({
 
         this._scrollView.connect('scroll-event', this._onScrollEvent.bind(this));
         this._dashContainer.connect('scroll-event', this._onScrollEvent.bind(this));
-        this._boxContainer.connect('scroll-event', this._onScrollEvent.bind(this));
         this.connect('scroll-event', this._onScrollEvent.bind(this));
 
         this._boxContainer = new St.BoxLayout({
@@ -381,6 +380,7 @@ export const DockDash = GObject.registerClass({
             reactive: true,
         });
         this._boxContainer.add_style_class_name(Theming.PositionStyleClass[this._position]);
+        this._boxContainer.connect('scroll-event', this._onScrollEvent.bind(this));
 
         this._boxContainer.connect('motion-event', (_actor, event) => {
             this._onDockMotionEvent(event);
