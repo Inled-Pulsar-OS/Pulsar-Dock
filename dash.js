@@ -252,7 +252,7 @@ class DockMinimizedWindowItem extends St.Button {
 });
 
 
-const baseIconSizes = [16, 22, 24, 32, 48, 64, 96, 128];
+const baseIconSizes = [16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 96, 128];
 
 /**
  * This class is a fork of the upstream dash class (ui.dash.js)
@@ -347,19 +347,30 @@ export const DockDash = GObject.registerClass({
             clip_to_allocation: false,
             hscrollbar_policy: this._isHorizontal ? St.PolicyType.EXTERNAL : St.PolicyType.NEVER,
             vscrollbar_policy: this._isHorizontal ?  St.PolicyType.NEVER : St.PolicyType.EXTERNAL,
-            x_expand: false,
-            y_expand: false,
+            x_expand: true,
+            y_expand: true,
+            x_align: Clutter.ActorAlign.FILL,
+            y_align: Clutter.ActorAlign.FILL,
             enable_mouse_scrolling: false,
         });
 
-        this._scrollView.connect('scroll-event', this._onScrollEvent.bind(this));
+        const updateScrollClip = () => {
+            const alloc = this._scrollView.get_allocation_box();
+            const w = alloc.get_width();
+            const h = alloc.get_height();
+            if (w > 0 && h > 0) {
+                if (this._isHorizontal)
+                    this._scrollView.set_clip(0, -2000, w, h + 4000);
+                else
+                    this._scrollView.set_clip(-2000, 0, w + 4000, h);
+            }
+        };
+        this._scrollView.connect('notify::allocation', updateScrollClip);
 
-        // St.ScrollView may re-enable clipping when its style changes; keep it
-        // off so magnified icons are never cut by the scroll viewport
-        this._scrollView.connect('style-changed', () => {
-            if (this._scrollView.clip_to_allocation)
-                this._scrollView.clip_to_allocation = false;
-        });
+        this._scrollView.connect('scroll-event', this._onScrollEvent.bind(this));
+        this._dashContainer.connect('scroll-event', this._onScrollEvent.bind(this));
+        this._boxContainer.connect('scroll-event', this._onScrollEvent.bind(this));
+        this.connect('scroll-event', this._onScrollEvent.bind(this));
 
         this._boxContainer = new St.BoxLayout({
             name: 'dashtodockBoxContainer',
@@ -563,6 +574,50 @@ export const DockDash = GObject.registerClass({
             return [minWidth, natWidth];
     }
 
+    vfunc_allocate(box) {
+        this.set_allocation(box);
+
+        const contentBox = this.get_theme_node().get_content_box(box);
+        const availWidth = contentBox.get_width();
+        const availHeight = contentBox.get_height();
+
+        if (this._isHorizontal) {
+            const maxW = this._maxWidth !== -1 ? Math.min(availWidth, this._maxWidth) : availWidth;
+            const [, natWidth] = this._dashContainer.get_preferred_width(availHeight);
+            const targetWidth = Math.min(natWidth, maxW);
+            const xOffset = Math.round(contentBox.x1 + (availWidth - targetWidth) / 2);
+
+            const childBox = new Clutter.ActorBox({
+                x1: xOffset,
+                y1: contentBox.y1,
+                x2: xOffset + targetWidth,
+                y2: contentBox.y2,
+            });
+
+            if (this._background)
+                this._background.allocate(childBox);
+
+            this._dashContainer.allocate(childBox);
+        } else {
+            const maxH = this._maxHeight !== -1 ? Math.min(availHeight, this._maxHeight) : availHeight;
+            const [, natHeight] = this._dashContainer.get_preferred_height(availWidth);
+            const targetHeight = Math.min(natHeight, maxH);
+            const yOffset = Math.round(contentBox.y1 + (availHeight - targetHeight) / 2);
+
+            const childBox = new Clutter.ActorBox({
+                x1: contentBox.x1,
+                y1: yOffset,
+                x2: contentBox.x2,
+                y2: yOffset + targetHeight,
+            });
+
+            if (this._background)
+                this._background.allocate(childBox);
+
+            this._dashContainer.allocate(childBox);
+        }
+    }
+
     get _container() {
         return this._dashContainer;
     }
@@ -752,8 +807,21 @@ export const DockDash = GObject.registerClass({
         const lower = adjustment.get_lower();
         const upper = adjustment.get_upper() - adjustment.get_page_size();
 
+        if (upper <= lower)
+            return Clutter.EVENT_PROPAGATE;
+
         const newValue = Math.min(Math.max(value + delta, lower), Math.max(lower, upper));
-        adjustment.set_value(newValue);
+        if (adjustment.ease) {
+            adjustment.ease(newValue, {
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                duration: 120,
+            });
+        } else {
+            adjustment.set_value(newValue);
+        }
+
+        if (this._pulsarPointerInDock && !this._pulsarMagRetreating)
+            this._pulsarMagnifyStart();
 
         return Clutter.EVENT_STOP;
     }
@@ -1486,6 +1554,10 @@ export const DockDash = GObject.registerClass({
         if (!delegate)
             return;
 
+        actor.connect('scroll-event', (_actor, event) => {
+            return this._onScrollEvent(this._scrollView, event);
+        });
+
         actor.connect('button-press-event', (_actor, event) => {
             if (!actor.reactive)
                 return Clutter.EVENT_PROPAGATE;
@@ -1829,6 +1901,10 @@ export const DockDash = GObject.registerClass({
                 clone._pulsarRetreating = false;
             }
 
+            const isScrollable = this._isHorizontal
+                ? ((this._scrollView.hadjustment?.upper ?? 0) > (this._scrollView.hadjustment?.page_size ?? 0))
+                : ((this._scrollView.vadjustment?.upper ?? 0) > (this._scrollView.vadjustment?.page_size ?? 0));
+
             // PULSAR-GG4G -- the real icon is clipped by the dock bar, so
             // an entry the cursor lock has pushed sideways must keep its
             // clone even at rest scale: otherwise the far end icons
@@ -1836,9 +1912,11 @@ export const DockDash = GObject.registerClass({
             // out of the bar and their level dropped to 0. Compare the
             // *applied* translation, not the target: while the row eases
             // back the target is already 0 but the icon is still off.
-            const displaced =
+            // When internal scrolling is active, icons outside the scrollview
+            // must stay clipped inside the viewport and not spawn floating clones.
+            const displaced = !isScrollable && (
                 Math.abs(entry.container[slotProperty]) > 0.5 ||
-                entry.level > 0.001;
+                entry.level > 0.001);
 
             if (targetScale <= 1.001 && !clone && !icon._bouncing &&
                 !displaced) {
@@ -1901,6 +1979,18 @@ export const DockDash = GObject.registerClass({
                     sourceWidth <= 0 || sourceHeight <= 0) {
                     this._pulsarMagnifyRelease(entry);
                     continue;
+                }
+
+                if (isScrollable) {
+                    const [scrollX, scrollY] = this._scrollView.get_transformed_position();
+                    const [scrollW, scrollH] = this._scrollView.get_transformed_size();
+                    const isOffScreen = this._isHorizontal
+                        ? (sourceX + sourceWidth <= scrollX || sourceX >= scrollX + scrollW)
+                        : (sourceY + sourceHeight <= scrollY || sourceY >= scrollY + scrollH);
+                    if (isOffScreen) {
+                        this._pulsarMagnifyRelease(entry);
+                        continue;
+                    }
                 }
 
                 clone.set_position(sourceX, sourceY);
@@ -2164,9 +2254,19 @@ export const DockDash = GObject.registerClass({
             for (const entry of row) {
                 if (!entry.container?.mapped)
                     continue;
+                // Only actively magnified icons can cause magnification overflow.
+                // Scrolled-off or resting icons must never move or expand the dock background.
+                if (!entry.magnifies || entry.level <= PULSAR_MAGNIFY_EPSILON)
+                    continue;
+
                 const scale = 1 + (zoom - 1) * entry.level;
                 const length = entry.length * scale;
                 const center = entry.center + entry.translation;
+
+                // Ignore icons that are outside the visible bar
+                if (center + length / 2 < barStart || center - length / 2 > barEnd)
+                    continue;
+
                 start = Math.min(start, center - length / 2);
                 end = Math.max(end, center + length / 2);
             }
@@ -2178,11 +2278,11 @@ export const DockDash = GObject.registerClass({
                 const before = barStart - start;
                 const after = end - barEnd;
                 if (horizontal) {
-                    overflow.left = before > 0 ? before + pad : 0;
-                    overflow.right = after > 0 ? after + pad : 0;
+                    overflow.left = before > 0 ? Math.min(before + pad, 40) : 0;
+                    overflow.right = after > 0 ? Math.min(after + pad, 40) : 0;
                 } else {
-                    overflow.top = before > 0 ? before + pad : 0;
-                    overflow.bottom = after > 0 ? after + pad : 0;
+                    overflow.top = before > 0 ? Math.min(before + pad, 40) : 0;
+                    overflow.bottom = after > 0 ? Math.min(after + pad, 40) : 0;
                 }
             }
         }

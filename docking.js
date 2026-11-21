@@ -131,8 +131,13 @@ const DashSlideContainer = GObject.registerClass({
         const [, , natChildWidth, natChildHeight] =
             this.child.get_preferred_size();
 
-        const childWidth = natChildWidth;
-        const childHeight = natChildHeight;
+        const isHorizontal = (this.side === St.Side.TOP) || (this.side === St.Side.BOTTOM);
+        const childWidth = isHorizontal
+            ? Math.min(natChildWidth, availWidth)
+            : natChildWidth;
+        const childHeight = !isHorizontal
+            ? Math.min(natChildHeight, availHeight)
+            : natChildHeight;
 
         const childBox = new Clutter.ActorBox();
 
@@ -141,11 +146,16 @@ const DashSlideContainer = GObject.registerClass({
         if (this.side === St.Side.LEFT) {
             childBox.x1 = (this.slideX - 1) * (childWidth - slideoutSize);
             childBox.x2 = slideoutSize + this.slideX * (childWidth - slideoutSize);
-            childBox.y1 = 0;
+            childBox.y1 = Math.round((availHeight - childHeight) / 2);
             childBox.y2 = childBox.y1 + childHeight;
-        } else if ((this.side === St.Side.RIGHT) || (this.side === St.Side.BOTTOM)) {
+        } else if (this.side === St.Side.RIGHT) {
             childBox.x1 = 0;
             childBox.x2 = childWidth;
+            childBox.y1 = Math.round((availHeight - childHeight) / 2);
+            childBox.y2 = childBox.y1 + childHeight;
+        } else if (this.side === St.Side.BOTTOM) {
+            childBox.x1 = Math.round((availWidth - childWidth) / 2);
+            childBox.x2 = childBox.x1 + childWidth;
             childBox.y1 = 0;
             childBox.y2 = childBox.y1 + childHeight;
         } else if (this.side === St.Side.TOP) {
@@ -154,8 +164,8 @@ const DashSlideContainer = GObject.registerClass({
             if (Main.panel.x === monitor.x && Main.panel.y === monitor.y &&
                 DockManager.settings.dockFixed)
                 yOffset = Main.panel.height;
-            childBox.x1 = 0;
-            childBox.x2 = childWidth;
+            childBox.x1 = Math.round((availWidth - childWidth) / 2);
+            childBox.x2 = childBox.x1 + childWidth;
             childBox.y1 = (this.slideX - 1) * (childHeight - slideoutSize) + yOffset;
             childBox.y2 = slideoutSize + this.slideX * (childHeight - slideoutSize) + yOffset;
             availHeight += yOffset;
